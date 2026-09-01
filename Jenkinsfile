@@ -2,12 +2,12 @@ pipeline {
     agent any
 
     environment {
-        REGISTRY   = "docker.io/<your-dockerhub-user>"
+        REGISTRY   = "docker.io/chetan07k"
         IMAGE_NAME = "compvalidator-app"
-        REGISTRY_CREDS = credentials('docker-registry-creds')
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -17,37 +17,57 @@ pipeline {
         stage('Extract Version') {
             steps {
                 script {
-                    // Pulls <version> straight out of pom.xml without needing Maven on the host
                     def pomVersion = sh(
                         script: "grep -m1 '<version>' pom.xml | sed -E 's/.*<version>(.*)<\\/version>.*/\\1/'",
                         returnStdout: true
                     ).trim()
+
                     env.RELEASE_TAG = "release-${pomVersion}"
+
                     echo "Resolved release tag: ${env.RELEASE_TAG}"
                 }
             }
         }
 
-        stage('Build & Package (Docker multi-stage)') {
+        stage('Build & Package') {
             steps {
-                sh "docker build -t ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG} ."
+                sh '''
+                    docker build \
+                      -t ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG} .
+                '''
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-registry-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo "$DOCKER_PASSWORD" | docker login docker.io \
+                            --username "$DOCKER_USER" \
+                            --password-stdin
+                    '''
+                }
             }
         }
 
         stage('Push to Registry') {
             steps {
-                sh """
-                    echo "${REGISTRY_CREDS_PSW}" | docker login ${REGISTRY.split('/')[0]} -u "${REGISTRY_CREDS_USR}" --password-stdin
+                sh '''
                     docker push ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}
-                """
+                '''
             }
         }
     }
 
     post {
         always {
-            sh "docker logout ${REGISTRY.split('/')[0]} || true"
+            sh 'docker logout docker.io || true'
         }
+
         success {
             echo "Pushed ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}"
         }
