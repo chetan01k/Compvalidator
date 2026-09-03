@@ -2,14 +2,15 @@ services:
   jenkins:
     image: local-jenkins:lts-docker
     container_name: jenkins
-    user: root          # simplest for socket permissions on a laptop; tighten for real use
+    user: root
     ports:
       - "8081:8080"
       - "50000:50000"
     volumes:
-      - jenkins_home:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock:z   # :z needed on Fedora (SELinux enforcing)
+      - compvalidator-app_jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock:z
     restart: unless-stopped
 
 volumes:
-  jenkins_home:
+  compvalidator-app_jenkins_home:
+    external: true
