@@ -64,12 +64,16 @@ pipeline {
     }
 
     post {
-        always {
-            sh 'docker logout docker.io || true'
-        }
-
         success {
             echo "Pushed ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}"
+        }
+
+        cleanup {
+            script {
+                if (env.WORKSPACE) {
+                    sh 'docker logout docker.io || true'
+                }
+            }
         }
     }
 }
