@@ -19,3 +19,4 @@ Create a packaging pipeline which will compile a java code and package it inside
       - Jenkins itself should run as a container based deployment. 
     - Packaged container will be pushed to the docker registry with same release tag that was used for the build
     - Release tag format: release-1.2.3 where 1.2.3 will be the pom version of java cod
+# Integration pipeline test
