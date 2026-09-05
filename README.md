@@ -21,3 +21,4 @@ Create a packaging pipeline which will compile a java code and package it inside
     - Release tag format: release-1.2.3 where 1.2.3 will be the pom version of java cod
 # Integration pipeline test
 
+# Push Test
