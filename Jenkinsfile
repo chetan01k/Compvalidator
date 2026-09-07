@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    options {
+        timestamps()
+    }
+
     environment {
         REGISTRY   = "docker.io/chetan07k"
         IMAGE_NAME = "compvalidator-app"
@@ -14,17 +18,75 @@ pipeline {
             }
         }
 
-        stage('Extract Version') {
+        stage('Extract & Validate Version') {
             steps {
                 script {
+
+                    // Read version from pom.xml
                     def pomVersion = sh(
-                        script: "grep -m1 '<version>' pom.xml | sed -E 's/.*<version>(.*)<\\/version>.*/\\1/'",
+                        script: """
+                            grep -m1 '<version>' pom.xml |
+                            sed -E 's/.*<version>(.*)<\\/version>.*/\\1/'
+                        """,
                         returnStdout: true
                     ).trim()
 
-                    env.RELEASE_TAG = "release-${pomVersion}"
+                    // Get the Git tag for the checked-out commit
+                    def gitTag = sh(
+                        script: """
+                            git describe --tags --exact-match 2>/dev/null || true
+                        """,
+                        returnStdout: true
+                    ).trim()
 
-                    echo "Resolved release tag: ${env.RELEASE_TAG}"
+                    echo "========================================"
+                    echo "POM VERSION : ${pomVersion}"
+                    echo "GIT TAG     : ${gitTag}"
+                    echo "========================================"
+
+                    // Only version 1.2.5 is allowed
+                    if (pomVersion != "1.2.5") {
+                        error(
+                            "Deployment is allowed only for version 1.2.5. " +
+                            "Found POM version: ${pomVersion}"
+                        )
+                    }
+
+                    // Pipeline must be triggered from a Git tag
+                    if (!gitTag) {
+                        error(
+                            "No Git tag found. " +
+                            "This pipeline can only run from a release tag."
+                        )
+                    }
+
+                    // Only release-1.2.5 is allowed
+                    def expectedTag = "release-1.2.5"
+
+                    if (gitTag != expectedTag) {
+                        error(
+                            "Invalid Git tag. " +
+                            "Expected: ${expectedTag}, " +
+                            "Found: ${gitTag}"
+                        )
+                    }
+
+                    // Docker image tag
+                    env.RELEASE_TAG = "release-1.2.5"
+
+                    // Show tag in Jenkins build
+                    currentBuild.displayName =
+                        "#${BUILD_NUMBER} - ${gitTag}"
+
+                    currentBuild.description =
+                        "Git Tag: ${gitTag} | POM Version: ${pomVersion}"
+
+                    echo "========================================"
+                    echo "VERSION VALIDATION SUCCESSFUL"
+                    echo "Git Tag     : ${gitTag}"
+                    echo "POM Version : ${pomVersion}"
+                    echo "Docker Tag  : ${env.RELEASE_TAG}"
+                    echo "========================================"
                 }
             }
         }
@@ -64,8 +126,19 @@ pipeline {
     }
 
     post {
+
         success {
-            echo "Pushed ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}"
+            echo "========================================"
+            echo "BUILD SUCCESSFUL"
+            echo "Git Tag : ${RELEASE_TAG}"
+            echo "Image   : ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}"
+            echo "========================================"
+        }
+
+        failure {
+            echo "========================================"
+            echo "BUILD FAILED"
+            echo "========================================"
         }
 
         cleanup {
