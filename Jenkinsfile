@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    tools {
+        maven 'Maven-3.9'
+    }
+
     options {
         timestamps()
         disableConcurrentBuilds()
@@ -28,7 +32,6 @@ pipeline {
 
                     env.POM_VERSION = pomVersion
 
-                    // Show POM version instead of Jenkins build number
                     currentBuild.displayName = pomVersion
                     currentBuild.description =
                         "Build and Deploy version ${pomVersion}"
@@ -37,6 +40,10 @@ pipeline {
                     echo "POM VERSION : ${env.POM_VERSION}"
                     echo "========================================"
                 }
+
+                echo "========================================"
+                echo "MAVEN BUILD"
+                echo "========================================"
 
                 sh '''
                     mvn -B clean package -DskipTests
@@ -73,6 +80,7 @@ pipeline {
             }
 
             steps {
+
                 script {
                     def expectedTag = "release-${env.POM_VERSION}"
 
@@ -102,7 +110,7 @@ pipeline {
 
                 sh '''
                     docker build \
-                      -t ${REGISTRY}/${IMAGE_NAME}:${POM_VERSION} .
+                        -t ${REGISTRY}/${IMAGE_NAME}:${POM_VERSION} .
                 '''
 
                 echo "========================================"
@@ -138,7 +146,7 @@ pipeline {
                 echo "Deploying version ${POM_VERSION}"
 
                 /*
-                 * Put your actual deployment command here.
+                 * Add your actual deployment command here.
                  *
                  * Example:
                  *
