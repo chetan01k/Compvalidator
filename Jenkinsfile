@@ -3,6 +3,7 @@ pipeline {
 
     options {
         timestamps()
+        disableConcurrentBuilds()
     }
 
     environment {
@@ -12,147 +13,102 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
+        stage('Build') {
             steps {
                 checkout scm
-            }
-        }
 
-        stage('Detect Release Tag') {
-            steps {
                 script {
-                    /*
-                     * Jenkins Multibranch Pipeline provides TAG_NAME
-                     * when this build is running for a Git tag.
-                     *
-                     * Fallback to git describe in case TAG_NAME is not available.
-                     */
-                    def gitTag = env.TAG_NAME ?: sh(
-                        script: "git describe --tags --exact-match 2>/dev/null || true",
-                        returnStdout: true
-                    ).trim()
-
-                    env.GIT_TAG = gitTag
-
-                    /*
-                     * Only tags starting with "release-" are releases.
-                     *
-                     * Examples:
-                     * release-1.2.5  -> RELEASE
-                     * release-1.2.6  -> RELEASE
-                     * 1.2.5          -> NOT RELEASE
-                     * main           -> NOT RELEASE
-                     */
-                    env.IS_RELEASE = gitTag.startsWith("release-") ? "true" : "false"
-
-                    echo "========================================"
-                    echo "TAG_NAME    : ${env.TAG_NAME ?: '(none)'}"
-                    echo "GIT TAG     : ${gitTag ?: '(none)'}"
-                    echo "IS RELEASE  : ${env.IS_RELEASE}"
-                    echo "========================================"
-
-                    if (env.IS_RELEASE == "false") {
-                        echo "Not a release tag - skipping build/push stages. " +
-                             "Normal branch pushes and non-release tags do not deploy."
-
-                        currentBuild.displayName =
-                            "#${BUILD_NUMBER} - skipped (no release tag)"
-                    }
-                }
-            }
-        }
-
-        stage('Validate POM Version') {
-            when {
-                environment name: 'IS_RELEASE', value: 'true'
-            }
-
-            steps {
-                script {
-
-                    /*
-                     * Read version from pom.xml.
-                     *
-                     * Example:
-                     * <version>1.2.5</version>
-                     *
-                     * Result:
-                     * 1.2.5
-                     */
                     def pomVersion = sh(
-                        script: """
+                        script: '''
                             grep -m1 '<version>' pom.xml |
                             sed -E 's/.*<version>(.*)<\\/version>.*/\\1/'
-                        """,
+                        ''',
                         returnStdout: true
                     ).trim()
 
-                    def expectedTag = "release-${pomVersion}"
-
-                    echo "========================================"
-                    echo "POM VERSION  : ${pomVersion}"
-                    echo "GIT TAG      : ${env.GIT_TAG}"
-                    echo "EXPECTED TAG : ${expectedTag}"
-                    echo "========================================"
-
-                    /*
-                     * Make sure Git tag and pom.xml version match.
-                     *
-                     * Example:
-                     *
-                     * POM:
-                     * 1.2.5
-                     *
-                     * Git tag:
-                     * release-1.2.5
-                     *
-                     * Result:
-                     * SUCCESS
-                     */
-                    if (env.GIT_TAG != expectedTag) {
-                        error(
-                            "Tag/POM mismatch. " +
-                            "Git tag '${env.GIT_TAG}' does not match " +
-                            "the tag expected from pom.xml version '${pomVersion}' " +
-                            "(expected '${expectedTag}')."
-                        )
-                    }
-
                     env.POM_VERSION = pomVersion
-                    env.RELEASE_TAG = expectedTag
 
-                    /*
-                     * Show release version in Jenkins.
-                     */
-                    currentBuild.displayName = "${env.RELEASE_TAG}"
-
+                    // Show POM version instead of Jenkins build number
+                    currentBuild.displayName = pomVersion
                     currentBuild.description =
-                        "Git Tag: ${env.GIT_TAG} | POM Version: ${pomVersion}"
+                        "Build and Deploy version ${pomVersion}"
 
-                    echo "VERSION VALIDATION SUCCESSFUL"
+                    echo "========================================"
+                    echo "POM VERSION : ${env.POM_VERSION}"
+                    echo "========================================"
                 }
-            }
-        }
 
-        stage('Build & Package') {
-            when {
-                environment name: 'IS_RELEASE', value: 'true'
-            }
-
-            steps {
                 sh '''
-                    docker build \
-                      -t ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG} .
+                    mvn -B clean package -DskipTests
                 '''
             }
         }
 
-        stage('Docker Login') {
+        stage('Test') {
+            steps {
+                echo "========================================"
+                echo "RUNNING TESTS"
+                echo "========================================"
+
+                sh '''
+                    mvn -B test
+                '''
+            }
+
+            post {
+                always {
+                    junit(
+                        testResults: '**/target/surefire-reports/*.xml',
+                        allowEmptyResults: true
+                    )
+                }
+            }
+        }
+
+        stage('Deploy') {
             when {
-                environment name: 'IS_RELEASE', value: 'true'
+                expression {
+                    return env.TAG_NAME?.startsWith('release-')
+                }
             }
 
             steps {
+                script {
+                    def expectedTag = "release-${env.POM_VERSION}"
+
+                    echo "========================================"
+                    echo "RELEASE VALIDATION"
+                    echo "========================================"
+                    echo "TAG      : ${env.TAG_NAME}"
+                    echo "POM      : ${env.POM_VERSION}"
+                    echo "EXPECTED : ${expectedTag}"
+                    echo "========================================"
+
+                    if (env.TAG_NAME != expectedTag) {
+                        error(
+                            "Tag/POM mismatch. " +
+                            "Tag '${env.TAG_NAME}' does not match " +
+                            "POM version '${env.POM_VERSION}'. " +
+                            "Expected '${expectedTag}'."
+                        )
+                    }
+
+                    env.RELEASE_TAG = env.TAG_NAME
+                }
+
+                echo "========================================"
+                echo "DOCKER BUILD"
+                echo "========================================"
+
+                sh '''
+                    docker build \
+                      -t ${REGISTRY}/${IMAGE_NAME}:${POM_VERSION} .
+                '''
+
+                echo "========================================"
+                echo "DOCKER LOGIN"
+                echo "========================================"
+
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'docker-registry-creds',
@@ -166,18 +122,29 @@ pipeline {
                             --password-stdin
                     '''
                 }
-            }
-        }
 
-        stage('Push to Registry') {
-            when {
-                environment name: 'IS_RELEASE', value: 'true'
-            }
+                echo "========================================"
+                echo "DOCKER PUSH"
+                echo "========================================"
 
-            steps {
                 sh '''
-                    docker push ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}
+                    docker push ${REGISTRY}/${IMAGE_NAME}:${POM_VERSION}
                 '''
+
+                echo "========================================"
+                echo "DEPLOY"
+                echo "========================================"
+
+                echo "Deploying version ${POM_VERSION}"
+
+                /*
+                 * Put your actual deployment command here.
+                 *
+                 * Example:
+                 *
+                 * sh 'docker compose pull'
+                 * sh 'docker compose up -d'
+                 */
             }
         }
     }
@@ -185,37 +152,20 @@ pipeline {
     post {
 
         success {
-            script {
-
-                if (env.IS_RELEASE == "true") {
-
-                    echo "========================================"
-                    echo "BUILD SUCCESSFUL"
-                    echo "Git Tag : ${env.RELEASE_TAG}"
-                    echo "Version : ${env.POM_VERSION}"
-                    echo "Image   : ${REGISTRY}/${IMAGE_NAME}:${env.RELEASE_TAG}"
-                    echo "========================================"
-
-                } else {
-
-                    echo "No release tag on this commit - nothing built or pushed."
-                }
-            }
+            echo "========================================"
+            echo "PIPELINE SUCCESSFUL"
+            echo "VERSION : ${env.POM_VERSION}"
+            echo "========================================"
         }
 
         failure {
             echo "========================================"
-            echo "BUILD FAILED"
+            echo "PIPELINE FAILED"
             echo "========================================"
         }
 
         cleanup {
-            script {
-
-                if (env.WORKSPACE) {
-                    sh 'docker logout docker.io || true'
-                }
-            }
+            sh 'docker logout docker.io || true'
         }
     }
 }
