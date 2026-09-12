@@ -6,7 +6,7 @@
 
   <groupId>com.compvalidator</groupId>
   <artifactId>compvalidator-app</artifactId>
-  <version>1.2.5</version>
+  <version>1.2.6</version>
   <packaging>jar</packaging>
 
   <properties>
