@@ -9,13 +9,32 @@ pipeline {
     environment {
         REGISTRY   = "docker.io/chetan07k"
         IMAGE_NAME = "compvalidator-app"
+
+        IS_RELEASE = "false"
+        RELEASE_TAG = ""
+        POM_VERSION = ""
+        DOCKER_IMAGE = ""
     }
 
     stages {
 
+        /*
+         * ============================================================
+         * DETECT RELEASE TAG
+         * ============================================================
+         *
+         * Only release-* tags are allowed to continue.
+         *
+         * Example:
+         * release-1.2.7  -> RELEASE
+         * main           -> SKIP
+         * feature/test   -> SKIP
+         * v1.2.7         -> SKIP
+         */
         stage('Detect Release Tag') {
             steps {
                 script {
+
                     def detectedTag = sh(
                         script: '''
                             git tag --points-at HEAD 'release-*' | head -1
@@ -23,33 +42,41 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    echo "========================================"
-                    echo "RELEASE DETECTION"
-                    echo "========================================"
-                    echo "TAG_NAME       : ${env.TAG_NAME}"
-                    echo "BRANCH_NAME    : ${env.BRANCH_NAME}"
-                    echo "DETECTED TAG   : ${detectedTag}"
-                    echo "========================================"
+                    if (!detectedTag) {
 
-                    if (detectedTag) {
-                        env.IS_RELEASE = 'true'
+                        echo "========================================"
+                        echo "NO RELEASE TAG"
+                        echo "========================================"
+                        echo "Current commit is not a release-* tag."
+                        echo "Build and deployment will be skipped."
+                        echo "========================================"
+
+                        env.IS_RELEASE = "false"
+
+                    } else {
+
+                        env.IS_RELEASE = "true"
                         env.RELEASE_TAG = detectedTag
 
-                        echo "Release tag detected: ${env.RELEASE_TAG}"
-                    } else {
-                        env.IS_RELEASE = 'false'
-
-                        echo "No release tag on this commit."
-                        echo "Build will be skipped."
+                        echo "========================================"
+                        echo "RELEASE TAG DETECTED"
+                        echo "RELEASE TAG : ${env.RELEASE_TAG}"
+                        echo "========================================"
                     }
                 }
             }
         }
 
-        stage('Build') {
+
+        /*
+         * ============================================================
+         * READ POM VERSION
+         * ============================================================
+         */
+        stage('Read POM Version') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
@@ -64,46 +91,108 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
+                    if (!pomVersion) {
+                        error("Could not determine version from pom.xml")
+                    }
+
                     env.POM_VERSION = pomVersion
+
+                    echo "========================================"
+                    echo "VERSION INFORMATION"
+                    echo "POM VERSION : ${env.POM_VERSION}"
+                    echo "GIT TAG     : ${env.RELEASE_TAG}"
+                    echo "========================================"
+                }
+            }
+        }
+
+
+        /*
+         * ============================================================
+         * VALIDATE RELEASE
+         * ============================================================
+         *
+         * release-1.2.7 MUST match pom.xml version 1.2.7
+         */
+        stage('Validate Release') {
+            when {
+                expression {
+                    env.IS_RELEASE == "true"
+                }
+            }
+
+            steps {
+                script {
 
                     def expectedTag = "release-${env.POM_VERSION}"
 
                     echo "========================================"
                     echo "RELEASE VALIDATION"
                     echo "========================================"
+                    echo "GIT TAG     : ${env.RELEASE_TAG}"
                     echo "POM VERSION : ${env.POM_VERSION}"
-                    echo "RELEASE TAG : ${env.RELEASE_TAG}"
-                    echo "EXPECTED    : ${expectedTag}"
+                    echo "EXPECTED TAG: ${expectedTag}"
                     echo "========================================"
 
                     if (env.RELEASE_TAG != expectedTag) {
+
                         error(
-                            "Tag/POM mismatch. " +
-                            "Tag '${env.RELEASE_TAG}' does not match " +
-                            "POM version '${env.POM_VERSION}'. " +
+                            "Release validation failed. " +
+                            "Git tag '${env.RELEASE_TAG}' does not match " +
+                            "pom.xml version '${env.POM_VERSION}'. " +
                             "Expected '${expectedTag}'."
                         )
                     }
 
-                    currentBuild.displayName = env.RELEASE_TAG
-                    currentBuild.description =
-                        "Build and package ${env.RELEASE_TAG}"
+                    env.DOCKER_IMAGE =
+                        "${env.REGISTRY}/${env.IMAGE_NAME}:${env.RELEASE_TAG}"
 
-                    sh '''
-                        mvn -B clean package -DskipTests
-                    '''
+                    echo "Release validation successful."
+                    echo "Docker image: ${env.DOCKER_IMAGE}"
                 }
             }
         }
 
-        stage('Test') {
+
+        /*
+         * ============================================================
+         * BUILD
+         * ============================================================
+         */
+        stage('Build') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
             steps {
+
+                echo "========================================"
+                echo "MAVEN BUILD"
+                echo "========================================"
+
+                sh '''
+                    mvn -B clean package -DskipTests
+                '''
+            }
+        }
+
+
+        /*
+         * ============================================================
+         * TEST
+         * ============================================================
+         */
+        stage('Test') {
+            when {
+                expression {
+                    env.IS_RELEASE == "true"
+                }
+            }
+
+            steps {
+
                 echo "========================================"
                 echo "RUNNING TESTS"
                 echo "========================================"
@@ -123,39 +212,50 @@ pipeline {
             }
         }
 
+
+        /*
+         * ============================================================
+         * DOCKER BUILD
+         * ============================================================
+         */
         stage('Docker Build') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
             steps {
+
                 echo "========================================"
                 echo "DOCKER BUILD"
+                echo "========================================"
+                echo "IMAGE: ${env.DOCKER_IMAGE}"
                 echo "========================================"
 
                 sh '''
                     docker build \
-                        -t ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG} \
+                        -t "${DOCKER_IMAGE}" \
                         .
-                '''
-
-                sh '''
-                    docker image inspect \
-                        ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}
                 '''
             }
         }
 
+
+        /*
+         * ============================================================
+         * DOCKER LOGIN
+         * ============================================================
+         */
         stage('Docker Login') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
             steps {
+
                 echo "========================================"
                 echo "DOCKER LOGIN"
                 echo "========================================"
@@ -167,86 +267,204 @@ pipeline {
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
+
                     sh '''
-                        echo "$DOCKER_PASSWORD" | \
-                        docker login docker.io \
-                        --username "$DOCKER_USER" \
-                        --password-stdin
+                        echo "$DOCKER_PASSWORD" | docker login docker.io \
+                            --username "$DOCKER_USER" \
+                            --password-stdin
                     '''
                 }
             }
         }
 
+
+        /*
+         * ============================================================
+         * DOCKER PUSH
+         * ============================================================
+         */
         stage('Docker Push') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
             steps {
+
                 echo "========================================"
                 echo "DOCKER PUSH"
                 echo "========================================"
+                echo "Pushing: ${env.DOCKER_IMAGE}"
+                echo "========================================"
 
                 sh '''
-                    docker push \
-                        ${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}
+                    docker push "${DOCKER_IMAGE}"
                 '''
-
-                echo "========================================"
-                echo "PUSH COMPLETE"
-                echo "========================================"
-
-                echo "${REGISTRY}/${IMAGE_NAME}:${RELEASE_TAG}"
             }
         }
 
-        stage('Deploy') {
+
+        /*
+         * ============================================================
+         * VERIFY DOCKER HUB RELEASE
+         * ============================================================
+         *
+         * This is a HARD GATE.
+         *
+         * If Docker Hub does not contain the release image,
+         * the pipeline FAILS.
+         *
+         * Deploy stage will NOT execute.
+         */
+        stage('Verify Docker Hub Release') {
             when {
                 expression {
-                    return env.IS_RELEASE == 'true'
+                    env.IS_RELEASE == "true"
                 }
             }
 
             steps {
+
+                script {
+
+                    echo "========================================"
+                    echo "VERIFY DOCKER HUB RELEASE"
+                    echo "========================================"
+                    echo "Checking: ${env.DOCKER_IMAGE}"
+                    echo "========================================"
+
+                    def result = sh(
+                        script: '''
+                            docker manifest inspect "${DOCKER_IMAGE}" \
+                                >/dev/null 2>&1
+                        ''',
+                        returnStatus: true
+                    )
+
+                    if (result != 0) {
+
+                        error(
+                            "Docker Hub verification FAILED. " +
+                            "Image '${env.DOCKER_IMAGE}' was not found. " +
+                            "Deployment stopped."
+                        )
+                    }
+
+                    echo "========================================"
+                    echo "DOCKER HUB RELEASE VERIFIED"
+                    echo "========================================"
+                    echo "Image exists:"
+                    echo "${env.DOCKER_IMAGE}"
+                    echo "Deployment is allowed."
+                    echo "========================================"
+                }
+            }
+        }
+
+
+        /*
+         * ============================================================
+         * DEPLOY
+         * ============================================================
+         *
+         * This stage is reached ONLY when:
+         *
+         * 1. release-* tag exists
+         * 2. Git tag matches POM version
+         * 3. Maven build succeeds
+         * 4. Tests succeed
+         * 5. Docker build succeeds
+         * 6. Docker push succeeds
+         * 7. Docker Hub image verification succeeds
+         */
+        stage('Deploy') {
+            when {
+                expression {
+                    env.IS_RELEASE == "true"
+                }
+            }
+
+            steps {
+
                 echo "========================================"
                 echo "DEPLOY"
                 echo "========================================"
+                echo "VERSION : ${env.POM_VERSION}"
+                echo "RELEASE : ${env.RELEASE_TAG}"
+                echo "IMAGE   : ${env.DOCKER_IMAGE}"
+                echo "========================================"
 
-                echo "Deploying ${RELEASE_TAG}"
+                /*
+                 * PUT YOUR ACTUAL DEPLOYMENT COMMAND HERE.
+                 *
+                 * Example:
+                 *
+                 * sh '''
+                 *     docker compose pull
+                 *     docker compose up -d
+                 * '''
+                 */
 
-                // Add production deployment here.
+                echo "Deploying ${env.RELEASE_TAG}"
             }
         }
     }
 
+
+    /*
+     * ================================================================
+     * POST ACTIONS
+     * ================================================================
+     */
     post {
+
         success {
-            echo "========================================"
-            echo "PIPELINE SUCCESSFUL"
-            echo "========================================"
 
             script {
-                if (env.IS_RELEASE == 'true') {
+
+                if (env.IS_RELEASE == "true") {
+
+                    echo "========================================"
+                    echo "PIPELINE SUCCESSFUL"
+                    echo "========================================"
+                    echo "RELEASE : ${env.RELEASE_TAG}"
                     echo "VERSION : ${env.POM_VERSION}"
-                    echo "TAG     : ${env.RELEASE_TAG}"
-                    echo "IMAGE   : ${env.REGISTRY}/${env.IMAGE_NAME}:${env.RELEASE_TAG}"
+                    echo "IMAGE   : ${env.DOCKER_IMAGE}"
+                    echo "========================================"
+
                 } else {
-                    echo "No release tag detected."
-                    echo "Nothing was built or pushed."
+
+                    echo "========================================"
+                    echo "PIPELINE SKIPPED"
+                    echo "========================================"
+                    echo "No release-* tag detected."
+                    echo "No build or deployment performed."
+                    echo "========================================"
                 }
             }
         }
 
         failure {
+
             echo "========================================"
             echo "PIPELINE FAILED"
+            echo "========================================"
+
+            echo "Release : ${env.RELEASE_TAG}"
+            echo "Version : ${env.POM_VERSION}"
+            echo "Image   : ${env.DOCKER_IMAGE}"
+
+            echo "========================================"
+            echo "DEPLOYMENT WAS NOT COMPLETED"
             echo "========================================"
         }
 
         cleanup {
-            sh 'docker logout docker.io || true'
+
+            sh '''
+                docker logout docker.io || true
+            '''
         }
     }
 }
