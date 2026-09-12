@@ -7,10 +7,10 @@ pipeline {
     }
 
     environment {
-        REGISTRY   = "docker.io/chetan07k"
-        IMAGE_NAME = "compvalidator-app"
+        REGISTRY    = "docker.io/chetan07k"
+        IMAGE_NAME  = "compvalidator-app"
 
-        IS_RELEASE = "false"
+        IS_RELEASE  = "false"
         RELEASE_TAG = ""
         POM_VERSION = ""
         DOCKER_IMAGE = ""
@@ -18,23 +18,9 @@ pipeline {
 
     stages {
 
-        /*
-         * ============================================================
-         * DETECT RELEASE TAG
-         * ============================================================
-         *
-         * Only release-* tags are allowed to continue.
-         *
-         * Example:
-         * release-1.2.7  -> RELEASE
-         * main           -> SKIP
-         * feature/test   -> SKIP
-         * v1.2.7         -> SKIP
-         */
         stage('Detect Release Tag') {
             steps {
                 script {
-
                     def detectedTag = sh(
                         script: '''
                             git tag --points-at HEAD 'release-*' | head -1
@@ -43,18 +29,15 @@ pipeline {
                     ).trim()
 
                     if (!detectedTag) {
-
                         echo "========================================"
                         echo "NO RELEASE TAG"
                         echo "========================================"
-                        echo "Current commit is not a release-* tag."
+                        echo "This is not a release build."
                         echo "Build and deployment will be skipped."
                         echo "========================================"
 
                         env.IS_RELEASE = "false"
-
                     } else {
-
                         env.IS_RELEASE = "true"
                         env.RELEASE_TAG = detectedTag
 
@@ -67,12 +50,6 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================================
-         * READ POM VERSION
-         * ============================================================
-         */
         stage('Read POM Version') {
             when {
                 expression {
@@ -82,7 +59,6 @@ pipeline {
 
             steps {
                 script {
-
                     def pomVersion = sh(
                         script: '''
                             grep -m1 '<version>' pom.xml |
@@ -92,28 +68,19 @@ pipeline {
                     ).trim()
 
                     if (!pomVersion) {
-                        error("Could not determine version from pom.xml")
+                        error("Unable to read version from pom.xml")
                     }
 
                     env.POM_VERSION = pomVersion
 
                     echo "========================================"
-                    echo "VERSION INFORMATION"
                     echo "POM VERSION : ${env.POM_VERSION}"
-                    echo "GIT TAG     : ${env.RELEASE_TAG}"
+                    echo "RELEASE TAG : ${env.RELEASE_TAG}"
                     echo "========================================"
                 }
             }
         }
 
-
-        /*
-         * ============================================================
-         * VALIDATE RELEASE
-         * ============================================================
-         *
-         * release-1.2.7 MUST match pom.xml version 1.2.7
-         */
         stage('Validate Release') {
             when {
                 expression {
@@ -123,21 +90,19 @@ pipeline {
 
             steps {
                 script {
-
                     def expectedTag = "release-${env.POM_VERSION}"
 
                     echo "========================================"
                     echo "RELEASE VALIDATION"
                     echo "========================================"
-                    echo "GIT TAG     : ${env.RELEASE_TAG}"
-                    echo "POM VERSION : ${env.POM_VERSION}"
-                    echo "EXPECTED TAG: ${expectedTag}"
+                    echo "Git Tag      : ${env.RELEASE_TAG}"
+                    echo "POM Version  : ${env.POM_VERSION}"
+                    echo "Expected Tag : ${expectedTag}"
                     echo "========================================"
 
                     if (env.RELEASE_TAG != expectedTag) {
-
                         error(
-                            "Release validation failed. " +
+                            "Tag/POM mismatch. " +
                             "Git tag '${env.RELEASE_TAG}' does not match " +
                             "pom.xml version '${env.POM_VERSION}'. " +
                             "Expected '${expectedTag}'."
@@ -153,12 +118,56 @@ pipeline {
             }
         }
 
-
         /*
-         * ============================================================
-         * BUILD
-         * ============================================================
+         * IMPORTANT:
+         *
+         * Docker Hub MUST already contain the release image.
+         *
+         * If the image does not exist:
+         *   - Pipeline FAILS
+         *   - Maven Build does NOT run
+         *   - Docker Build does NOT run
+         *   - Docker Push does NOT run
+         *   - Deploy does NOT run
          */
+        stage('Verify Docker Hub Release') {
+            when {
+                expression {
+                    env.IS_RELEASE == "true"
+                }
+            }
+
+            steps {
+                script {
+                    echo "========================================"
+                    echo "DOCKER HUB RELEASE CHECK"
+                    echo "========================================"
+                    echo "Checking:"
+                    echo "${env.DOCKER_IMAGE}"
+                    echo "========================================"
+
+                    def result = sh(
+                        script: '''
+                            docker manifest inspect "${DOCKER_IMAGE}" \
+                                >/dev/null 2>&1
+                        ''',
+                        returnStatus: true
+                    )
+
+                    if (result != 0) {
+                        error(
+                            "Docker Hub release image NOT FOUND: " +
+                            "${env.DOCKER_IMAGE}. " +
+                            "Build and deployment stopped."
+                        )
+                    }
+
+                    echo "Docker Hub release image exists."
+                    echo "Build and deployment may continue."
+                }
+            }
+        }
+
         stage('Build') {
             when {
                 expression {
@@ -167,7 +176,6 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "MAVEN BUILD"
                 echo "========================================"
@@ -178,12 +186,6 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================================
-         * TEST
-         * ============================================================
-         */
         stage('Test') {
             when {
                 expression {
@@ -192,7 +194,6 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "RUNNING TESTS"
                 echo "========================================"
@@ -212,12 +213,6 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================================
-         * DOCKER BUILD
-         * ============================================================
-         */
         stage('Docker Build') {
             when {
                 expression {
@@ -226,7 +221,6 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "DOCKER BUILD"
                 echo "========================================"
@@ -241,12 +235,6 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================================
-         * DOCKER LOGIN
-         * ============================================================
-         */
         stage('Docker Login') {
             when {
                 expression {
@@ -255,7 +243,6 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "DOCKER LOGIN"
                 echo "========================================"
@@ -267,7 +254,6 @@ pipeline {
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
-
                     sh '''
                         echo "$DOCKER_PASSWORD" | docker login docker.io \
                             --username "$DOCKER_USER" \
@@ -277,12 +263,6 @@ pipeline {
             }
         }
 
-
-        /*
-         * ============================================================
-         * DOCKER PUSH
-         * ============================================================
-         */
         stage('Docker Push') {
             when {
                 expression {
@@ -291,11 +271,10 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "DOCKER PUSH"
                 echo "========================================"
-                echo "Pushing: ${env.DOCKER_IMAGE}"
+                echo "IMAGE: ${env.DOCKER_IMAGE}"
                 echo "========================================"
 
                 sh '''
@@ -304,20 +283,13 @@ pipeline {
             }
         }
 
-
         /*
-         * ============================================================
-         * VERIFY DOCKER HUB RELEASE
-         * ============================================================
+         * Second verification.
          *
-         * This is a HARD GATE.
-         *
-         * If Docker Hub does not contain the release image,
-         * the pipeline FAILS.
-         *
-         * Deploy stage will NOT execute.
+         * This confirms the image is still available after push.
+         * Deploy cannot execute if verification fails.
          */
-        stage('Verify Docker Hub Release') {
+        stage('Verify Docker Hub After Push') {
             when {
                 expression {
                     env.IS_RELEASE == "true"
@@ -325,13 +297,9 @@ pipeline {
             }
 
             steps {
-
                 script {
-
                     echo "========================================"
-                    echo "VERIFY DOCKER HUB RELEASE"
-                    echo "========================================"
-                    echo "Checking: ${env.DOCKER_IMAGE}"
+                    echo "VERIFY DOCKER HUB AFTER PUSH"
                     echo "========================================"
 
                     def result = sh(
@@ -343,41 +311,18 @@ pipeline {
                     )
 
                     if (result != 0) {
-
                         error(
-                            "Docker Hub verification FAILED. " +
-                            "Image '${env.DOCKER_IMAGE}' was not found. " +
+                            "Docker Hub verification failed after push. " +
+                            "Image '${env.DOCKER_IMAGE}' cannot be found. " +
                             "Deployment stopped."
                         )
                     }
 
-                    echo "========================================"
-                    echo "DOCKER HUB RELEASE VERIFIED"
-                    echo "========================================"
-                    echo "Image exists:"
-                    echo "${env.DOCKER_IMAGE}"
-                    echo "Deployment is allowed."
-                    echo "========================================"
+                    echo "Docker Hub image verified successfully."
                 }
             }
         }
 
-
-        /*
-         * ============================================================
-         * DEPLOY
-         * ============================================================
-         *
-         * This stage is reached ONLY when:
-         *
-         * 1. release-* tag exists
-         * 2. Git tag matches POM version
-         * 3. Maven build succeeds
-         * 4. Tests succeed
-         * 5. Docker build succeeds
-         * 6. Docker push succeeds
-         * 7. Docker Hub image verification succeeds
-         */
         stage('Deploy') {
             when {
                 expression {
@@ -386,17 +331,16 @@ pipeline {
             }
 
             steps {
-
                 echo "========================================"
                 echo "DEPLOY"
                 echo "========================================"
-                echo "VERSION : ${env.POM_VERSION}"
-                echo "RELEASE : ${env.RELEASE_TAG}"
-                echo "IMAGE   : ${env.DOCKER_IMAGE}"
+                echo "Release : ${env.RELEASE_TAG}"
+                echo "Version : ${env.POM_VERSION}"
+                echo "Image   : ${env.DOCKER_IMAGE}"
                 echo "========================================"
 
                 /*
-                 * PUT YOUR ACTUAL DEPLOYMENT COMMAND HERE.
+                 * ADD YOUR REAL DEPLOY COMMAND HERE.
                  *
                  * Example:
                  *
@@ -406,35 +350,23 @@ pipeline {
                  * '''
                  */
 
-                echo "Deploying ${env.RELEASE_TAG}"
+                echo "Deploying ${env.DOCKER_IMAGE}"
             }
         }
     }
 
-
-    /*
-     * ================================================================
-     * POST ACTIONS
-     * ================================================================
-     */
     post {
-
         success {
-
             script {
-
                 if (env.IS_RELEASE == "true") {
-
                     echo "========================================"
-                    echo "PIPELINE SUCCESSFUL"
+                    echo "RELEASE PIPELINE SUCCESSFUL"
                     echo "========================================"
-                    echo "RELEASE : ${env.RELEASE_TAG}"
-                    echo "VERSION : ${env.POM_VERSION}"
-                    echo "IMAGE   : ${env.DOCKER_IMAGE}"
+                    echo "Release : ${env.RELEASE_TAG}"
+                    echo "Version : ${env.POM_VERSION}"
+                    echo "Image   : ${env.DOCKER_IMAGE}"
                     echo "========================================"
-
                 } else {
-
                     echo "========================================"
                     echo "PIPELINE SKIPPED"
                     echo "========================================"
@@ -446,22 +378,18 @@ pipeline {
         }
 
         failure {
-
             echo "========================================"
             echo "PIPELINE FAILED"
             echo "========================================"
-
             echo "Release : ${env.RELEASE_TAG}"
             echo "Version : ${env.POM_VERSION}"
             echo "Image   : ${env.DOCKER_IMAGE}"
-
             echo "========================================"
-            echo "DEPLOYMENT WAS NOT COMPLETED"
+            echo "DEPLOYMENT NOT COMPLETED"
             echo "========================================"
         }
 
         cleanup {
-
             sh '''
                 docker logout docker.io || true
             '''
